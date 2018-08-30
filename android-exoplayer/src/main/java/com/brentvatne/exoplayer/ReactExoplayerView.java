@@ -193,17 +193,17 @@ class ReactExoplayerView extends FrameLayout implements
         addView(exoPlayerView, 0, layoutParams);
     }
 
-    @Override
-    protected void onAttachedToWindow() {
-        super.onAttachedToWindow();
-        initializePlayer();
-    }
+//     @Override
+//     protected void onAttachedToWindow() {
+//         super.onAttachedToWindow();
+//         initializePlayer();
+//     }
 
-    @Override
-    protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
-        stopPlayback();
-    }
+//     @Override
+//     protected void onDetachedFromWindow() {
+//         super.onDetachedFromWindow();
+//         stopPlayback();
+//     }
 
     // LifecycleEventListener implementation
 
