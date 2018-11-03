@@ -20,6 +20,7 @@ import com.brentvatne.receiver.BecomingNoisyListener;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Dynamic;
 import com.facebook.react.bridge.LifecycleEventListener;
+import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableArray;
@@ -57,12 +58,23 @@ import com.google.android.exoplayer2.trackselection.FixedTrackSelection;
 import com.google.android.exoplayer2.trackselection.MappingTrackSelector;
 import com.google.android.exoplayer2.trackselection.TrackSelection;
 import com.google.android.exoplayer2.trackselection.TrackSelectionArray;
+import com.google.android.exoplayer2.trackselection.TrackSelector;
+import com.google.android.exoplayer2.upstream.BandwidthMeter;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DefaultAllocator;
 import com.google.android.exoplayer2.upstream.DefaultBandwidthMeter;
+import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
+import com.google.android.exoplayer2.upstream.DefaultHttpDataSourceFactory;
+import com.google.android.exoplayer2.upstream.FileDataSource;
+import com.google.android.exoplayer2.upstream.cache.CacheDataSink;
+import com.google.android.exoplayer2.upstream.cache.CacheDataSource;
+import com.google.android.exoplayer2.upstream.cache.LeastRecentlyUsedCacheEvictor;
+import com.google.android.exoplayer2.upstream.cache.NoOpCacheEvictor;
+import com.google.android.exoplayer2.upstream.cache.SimpleCache;
 import com.google.android.exoplayer2.util.MimeTypes;
 import com.google.android.exoplayer2.util.Util;
 
+import java.io.File;
 import java.net.CookieHandler;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
@@ -137,6 +149,7 @@ class ReactExoplayerView extends FrameLayout implements
     private final AudioManager audioManager;
     private final AudioBecomingNoisyReceiver audioBecomingNoisyReceiver;
 
+    @SuppressLint("HandlerLeak")
     private final Handler progressHandler = new Handler() {
         @Override
         public void handleMessage(Message msg) {
@@ -165,7 +178,7 @@ class ReactExoplayerView extends FrameLayout implements
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         themedReactContext.addLifecycleEventListener(this);
         audioBecomingNoisyReceiver = new AudioBecomingNoisyReceiver(themedReactContext);
-
+        Log.d(TAG, "ReactExoplayerView: TEST PLAYER");
         initializePlayer();
     }
 
@@ -178,6 +191,7 @@ class ReactExoplayerView extends FrameLayout implements
 
     private void createViews() {
         clearResumePosition();
+
         mediaDataSourceFactory = buildDataSourceFactory(true);
         mainHandler = new Handler();
         if (CookieHandler.getDefault() != DEFAULT_COOKIE_MANAGER) {
@@ -193,33 +207,18 @@ class ReactExoplayerView extends FrameLayout implements
         addView(exoPlayerView, 0, layoutParams);
     }
 
-boolean attached=false;
-    boolean detached=true;
-     @Override
-     protected void onAttachedToWindow() {
-         super.onAttachedToWindow();
-         attached=true;
-         if(detached) {
-             initializePlayer();
-             detached=false;
-         }
-     }
+//     @Override
+//     protected void onAttachedToWindow() {
+//         super.onAttachedToWindow();
+//         initializePlayer();
+//     }
 
-     @Override
-     protected void onDetachedFromWindow() {
-         super.onDetachedFromWindow();
-         attached=false;
-         postDelayed(new Runnable() {
-             @Override
-             public void run() {
-                 if(!attached){
-                     detached=true;
-                     stopPlayback();
-                 }
+//     @Override
+//     protected void onDetachedFromWindow() {
+//         super.onDetachedFromWindow();
+//         stopPlayback();
+//     }
 
-             }
-         },100);
-     }
     // LifecycleEventListener implementation
 
     @Override
@@ -248,15 +247,40 @@ boolean attached=false;
         stopPlayback();
     }
 
-
     // Internal methods
+    static class CacheDataSourceFactory implements DataSource.Factory {
+        private final ReactContext context;
+        private final DataSource.Factory defaultDatasourceFactory;
+        private final long maxFileSize, maxCacheSize;
+        static private SimpleCache simpleCache;
+        CacheDataSourceFactory(ReactContext context, long maxCacheSize, long maxFileSize) {
+            super();
+            this.context = context;
+            this.maxCacheSize = maxCacheSize;
+            this.maxFileSize = maxFileSize;
+            defaultDatasourceFactory=DataSourceUtil.getDefaultDataSourceFactory(this.context, BANDWIDTH_METER, null);
+        }
 
+        @Override
+        public DataSource createDataSource() {
+            LeastRecentlyUsedCacheEvictor evictor = new LeastRecentlyUsedCacheEvictor(maxCacheSize);
+            if(simpleCache==null)
+                simpleCache = new SimpleCache(new File(context.getExternalCacheDir(), "media"), evictor);
+            return new CacheDataSource(simpleCache, defaultDatasourceFactory.createDataSource(),
+                    new FileDataSource(), new CacheDataSink(simpleCache, maxFileSize),
+                    CacheDataSource.FLAG_BLOCK_ON_CACHE | CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR, null);
+        }
+    }
     private void initializePlayer() {
+        Log.d(TAG, "initializePlayer: "+playerNeedsSource+ " Source is "+srcUri + " Player is : "+player+" TEST PLAYER" );
         if (player == null) {
-            TrackSelection.Factory videoTrackSelectionFactory = new AdaptiveTrackSelection.Factory(BANDWIDTH_METER);
-            trackSelector = new DefaultTrackSelector(videoTrackSelectionFactory);
             DefaultAllocator allocator = new DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE);
             DefaultLoadControl defaultLoadControl = new DefaultLoadControl(allocator, minBufferMs, maxBufferMs, bufferForPlaybackMs, bufferForPlaybackAfterRebufferMs, -1, true);
+            BandwidthMeter bandwidthMeter = new DefaultBandwidthMeter();
+            TrackSelection.Factory videoTrackSelectionFactory =
+                    new AdaptiveTrackSelection.Factory(bandwidthMeter);
+            trackSelector = new DefaultTrackSelector(videoTrackSelectionFactory);
+
             player = ExoPlayerFactory.newSimpleInstance(getContext(), trackSelector, defaultLoadControl);
             player.addListener(this);
             player.setMetadataOutput(this);
@@ -264,7 +288,6 @@ boolean attached=false;
             audioBecomingNoisyReceiver.setListener(this);
             setPlayWhenReady(!isPaused);
             playerNeedsSource = true;
-
             PlaybackParameters params = new PlaybackParameters(rate, 1f);
             player.setPlaybackParameters(params);
         }
@@ -281,7 +304,6 @@ boolean attached=false;
                 );
                 mediaSource = new MergingMediaSource(textSourceArray);
             }
-
             boolean haveResumePosition = resumeWindow != C.INDEX_UNSET;
             if (haveResumePosition) {
                 player.seekTo(resumeWindow, resumePosition);
@@ -293,7 +315,7 @@ boolean attached=false;
             loadVideoStarted = true;
         }
     }
- 
+
     private MediaSource buildMediaSource(Uri uri, String overrideExtension) {
         int type = Util.inferContentType(!TextUtils.isEmpty(overrideExtension) ? "." + overrideExtension
                 : uri.getLastPathSegment());
@@ -380,10 +402,12 @@ boolean attached=false;
     }
 
     private void startPlayback() {
+
         if (player != null) {
             switch (player.getPlaybackState()) {
                 case ExoPlayer.STATE_IDLE:
                 case ExoPlayer.STATE_ENDED:
+                    Log.d(TAG, "startPlayback: TEST PLAYER");
                     initializePlayer();
                     break;
                 case ExoPlayer.STATE_BUFFERING:
@@ -397,6 +421,7 @@ boolean attached=false;
             }
 
         } else {
+            Log.d(TAG, "startPlayback: TEST PLAYER ELSE");
             initializePlayer();
         }
         if (!disableFocus) {
@@ -445,7 +470,8 @@ boolean attached=false;
      * @return A new DataSource factory.
      */
     private DataSource.Factory buildDataSourceFactory(boolean useBandwidthMeter) {
-        return DataSourceUtil.getDefaultDataSourceFactory(this.themedReactContext, useBandwidthMeter ? BANDWIDTH_METER : null, requestHeaders);
+        return new CacheDataSourceFactory(this.themedReactContext, 150 * 1024 * 1024, 25 * 1024 * 1024);
+//        return DataSourceUtil.getDefaultDataSourceFactory(this.themedReactContext, useBandwidthMeter ? BANDWIDTH_METER : null, requestHeaders);
     }
 
     // AudioManager.OnAudioFocusChangeListener implementation
@@ -569,13 +595,13 @@ boolean attached=false;
 
         TrackGroupArray groups = info.getTrackGroups(index);
         for (int i = 0; i < groups.length; ++i) {
-             Format format = groups.get(i).getFormat(0);
-             WritableMap textTrack = Arguments.createMap();
-             textTrack.putInt("index", i);
-             textTrack.putString("title", format.id != null ? format.id : "");
-             textTrack.putString("type", format.sampleMimeType);
-             textTrack.putString("language", format.language != null ? format.language : "");
-             textTracks.pushMap(textTrack);
+            Format format = groups.get(i).getFormat(0);
+            WritableMap textTrack = Arguments.createMap();
+            textTrack.putInt("index", i);
+            textTrack.putString("title", format.id != null ? format.id : "");
+            textTrack.putString("type", format.sampleMimeType);
+            textTrack.putString("language", format.language != null ? format.language : "");
+            textTracks.pushMap(textTrack);
         }
         return textTracks;
     }
@@ -675,6 +701,7 @@ boolean attached=false;
         playerNeedsSource = true;
         if (isBehindLiveWindow(e)) {
             clearResumePosition();
+            Log.d(TAG, "onPlayerError: TEST PLAYER");
             initializePlayer();
         } else {
             updateResumePosition();
@@ -720,8 +747,8 @@ boolean attached=false;
             this.srcUri = uri;
             this.extension = extension;
             this.requestHeaders = headers;
-            this.mediaDataSourceFactory = DataSourceUtil.getDefaultDataSourceFactory(this.themedReactContext, BANDWIDTH_METER, this.requestHeaders);
-
+//            this.mediaDataSourceFactory = DataSourceUtil.getDefaultDataSourceFactory(this.themedReactContext, BANDWIDTH_METER, this.requestHeaders);
+            this.mediaDataSourceFactory=new CacheDataSourceFactory(this.themedReactContext, 100 * 1024 * 1024, 25 * 1024 * 1024);
             if (!isOriginalSourceNull && !isSourceEqual) {
                 reloadSource();
             }
@@ -754,6 +781,7 @@ boolean attached=false;
 
     private void reloadSource() {
         playerNeedsSource = true;
+        Log.d(TAG, "reloadSource: TEST PLAYER");
         initializePlayer();
     }
 
@@ -872,6 +900,7 @@ boolean attached=false;
     }
 
     public void setPausedModifier(boolean paused) {
+        Log.d(TAG, "setPausedModifier: TEST PLAYER"+player+ paused);
         isPaused = paused;
         if (player != null) {
             if (!paused) {
@@ -903,12 +932,12 @@ boolean attached=false;
     }
 
     public void setRateModifier(float newRate) {
-      rate = newRate;
+        rate = newRate;
 
-      if (player != null) {
-          PlaybackParameters params = new PlaybackParameters(rate, 1f);
-          player.setPlaybackParameters(params);
-      }
+        if (player != null) {
+            PlaybackParameters params = new PlaybackParameters(rate, 1f);
+            player.setPlaybackParameters(params);
+        }
     }
 
 
@@ -963,6 +992,7 @@ boolean attached=false;
         bufferForPlaybackMs = newBufferForPlaybackMs;
         bufferForPlaybackAfterRebufferMs = newBufferForPlaybackAfterRebufferMs;
         releasePlayer();
+        Log.d(TAG, "setBufferConfig: TEST PLAYER");
         initializePlayer();
     }
 }
