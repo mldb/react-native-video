@@ -293,7 +293,7 @@ boolean attached=false;
             loadVideoStarted = true;
         }
     }
-
+ 
     private MediaSource buildMediaSource(Uri uri, String overrideExtension) {
         int type = Util.inferContentType(!TextUtils.isEmpty(overrideExtension) ? "." + overrideExtension
                 : uri.getLastPathSegment());
